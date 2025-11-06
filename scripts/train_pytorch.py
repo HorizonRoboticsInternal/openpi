@@ -318,7 +318,10 @@ def train_step(model: torch.nn.Module, batch: Any, device: torch.device):
     elif isinstance(losses, torch.Tensor):
         losses = {"loss": torch.tensor(losses, device=device, dtype=torch.float32)}
     else:
-        assert isinstance(losses, dict), "Model forward must return a tensor or a dict of tensors."
+        assert isinstance(losses, dict), (
+            "Model forward must return a tensor or a dict/tuple/list of tensors.")
+
+    losses = jax.tree.map(lambda x: x.mean(), losses)
 
     loss = losses["loss"]
 
