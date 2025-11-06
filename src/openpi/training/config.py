@@ -1,7 +1,7 @@
 """See _CONFIGS for the list of available configs."""
 
 import abc
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import dataclasses
 import difflib
 import logging
@@ -96,6 +96,9 @@ class DataConfig:
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
     # Path to the data filter file for DROID dataset
     filter_dict_path: str | None = None
+
+    dataset_wrapper_ctor: Callable[["Dataset"], "Dataset"] | None = None  # noqa: F821
+    data_loader_wrapper_ctor: Callable[["DataConfig", Any], Any] | None = None
 
 
 class GroupFactory(Protocol):
@@ -473,6 +476,9 @@ class TrainConfig:
 
     # Optional path to a PyTorch checkpoint to load weights from.
     pytorch_weight_path: str | None = None
+
+    # If true, will strictly enforce that all weights are loaded when loading from pytorch_weight_path
+    strict_load: bool = True
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
