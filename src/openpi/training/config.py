@@ -97,7 +97,13 @@ class DataConfig:
     # Path to the data filter file for DROID dataset
     filter_dict_path: str | None = None
 
+    # Wrapper for dataset. Dataset is the object that provides individual data items.
+    # This will be used to wrap the dataset before it is passed to the data loader.
     dataset_wrapper_ctor: Callable[["Dataset"], "Dataset"] | None = None  # noqa: F821
+
+    # Wrapper for data loader. Data loader is the final object that provides
+    # batches to the training loop.
+    # This will be used to wrap the data loader after it is created.
     data_loader_wrapper_ctor: Callable[["DataConfig", Any], Any] | None = None
 
 
