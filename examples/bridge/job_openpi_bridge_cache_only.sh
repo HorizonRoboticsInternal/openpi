@@ -15,16 +15,6 @@ set -e  # Exit on any command failure from this point forward
 # _DEV_DIR - the directory which hosts the user uploaded code dirs
 # _TB_DIR  - the output dir for storing the job's results
 
-#SBATCH --job-name=openpi-bridge-cache
-#SBATCH --output=slurm/logs/%A_openpi_bridge_cache.out
-#SBATCH --error=slurm/logs/%A_openpi_bridge_cache.err
-#SBATCH --time=71:59:59
-#SBATCH --nodes=1
-#SBATCH --gres=gpu:8
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=104
-#SBATCH --mem=500G
-
 ## Entering the dev directory
 cd ${_DEV_DIR}
 rm -f core.python.*  # remove any previous core files
@@ -39,10 +29,9 @@ export LEROBOT_USE_CACHE_ONLY=1
 
 # Set up environment variables for HuggingFace cache
 # Point to where you uploaded the HF cache on the cluster
-# Note: HF_DATASETS_CACHE is all we need - HF_HOME is not required
 export HF_DATASETS_CACHE=${DATASET_ROOT}/datasets/openx/bridge_lerobot_cache/datasets
 
-# LeRobot Home - should contain ONLY the meta/ directory
+# LeRobot Home - it works if contains ONLY the meta/ directory
 # Structure: ${HF_LEROBOT_HOME}/bridge_lerobot_224/meta/
 #   - meta/info.json
 #   - meta/episodes.jsonl
@@ -72,9 +61,6 @@ NUM_GPU="$(nvidia-smi --list-gpus | wc -l)"
 echo "Number of GPUs: $NUM_GPU"
 echo "=========================================="
 
-# Note: --standalone mode handles distributed setup automatically
-# No need to manually set MASTER_ADDR/MASTER_PORT for single-node training
-
 # ======================
 # Training Configuration
 # ======================
@@ -87,7 +73,7 @@ export CHECKPOINT_DIR=${_TB_DIR}/checkpoints
 EXP_NAME="default"
 
 # Total batch size across all GPUs (will be divided by NUM_GPU)
-# For 8x H100 with 80GB each, you can use a larger batch size
+# For 8x H20 with 96GB each, you can use a larger batch size
 TOTAL_BATCH_SIZE=128  # 16 per GPU
 
 # Number of training steps
@@ -108,19 +94,15 @@ LEARNING_RATE=3e-5
 # IMPORTANT: Update these paths to match where you uploaded the files on your cluster
 
 # 1. PyTorch Weights Path
-#    Upload: /home/jerry/.cache/openpi/pi0_base_pytorch/ to cluster
+#    Upload to cluster from: /home/username/.cache/openpi/pi0_base_pytorch/
 #    Should contain: model.safetensors, config.json
 PYTORCH_WEIGHT_PATH="/data/cache/openpi/pi0_base_pytorch"
 export TORCHINDUCTOR_CACHE_DIR=$HOME/.cache/torchinductor
 
 # 2. Assets Directory (for normalization stats)
-#    Upload: assets/pi0_bridge_finetune/ to cluster
+#    Upload: assets/pi0_bridge_finetune/ to cluster (done automatically)
 #    Should contain: bridge_lerobot_224/norm_stats.json
-#    The code will look for: ${ASSETS_DIR}/bridge_lerobot_224/norm_stats.json
-# ASSETS_DIR="/data/cache/openpi/assets/pi0_bridge_finetune"
-
-# Note: The asset_id "bridge_lerobot_224" is set in config.py and will be appended
-# to ASSETS_DIR to find the norm stats
+#    Can be configured through `assets_base_dir` in `config.py`
 
 # ======================
 # Upload Instructions
@@ -191,7 +173,6 @@ echo "  HF Cache: $HF_DATASETS_CACHE"
 echo "  Checkpoint Dir: $CHECKPOINT_DIR"
 echo "=========================================="
 
-# PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 uv run torchrun --standalone --nnodes=1 --nproc_per_node=$NUM_GPU \
   scripts/train_pytorch.py pi0_bridge_finetune \
   --exp-name $EXP_NAME \

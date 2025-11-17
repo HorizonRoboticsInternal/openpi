@@ -1,8 +1,7 @@
 """
-Simple script for converting Bridge dataset (TFDS format) to LeRobot format.
+Script for converting Bridge dataset (TFDS format) to LeRobot format.
 
 This is a minimal conversion script similar to the Libero example.
-For more options (camera selection, video encoding, etc.), use convert_bridge_to_lerobot.py
 
 Usage:
     # Convert to default HuggingFace cache location
@@ -21,7 +20,7 @@ Note: Install RLDS dependencies first:
 The Bridge dataset has:
 - 60,096 training episodes + 3,475 test episodes
 - WidowX robot with 7D actions: [x, y, z, roll, pitch, yaw, gripper]
-- Images at 224×224×3 RGB (we use image_0 and image_1 cameras)
+- Images at 256×256×3 RGB (we use image_0 and image_1 cameras)
 """
 
 import shutil

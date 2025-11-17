@@ -11,7 +11,6 @@ echo ""
 
 # Set environment variables to use ONLY the cache
 export HF_DATASETS_CACHE=/data/jerry/datasets/openx/cache/datasets
-# export HF_HOME=/data/jerry/datasets/openx/cache
 # Point to a NON-EXISTENT location to ensure we're not using the original dataset
 export HF_LEROBOT_HOME=/tmp/nonexistent_lerobot_$(date +%s)
 
