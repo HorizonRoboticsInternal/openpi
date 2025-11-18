@@ -651,6 +651,7 @@ class TrainConfig:
     vlm_lora_config: LoraConfig | None = None
     expert_lora_config: LoraConfig | None = None
     freeze_vlm: bool = False
+    do_not_load_token_embedding: bool = False
 
     @property
     def assets_dirs(self) -> pathlib.Path:
