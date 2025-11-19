@@ -240,6 +240,8 @@ class PI0Pytorch(nn.Module):
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
+            if self.config.skip_unused_image_slot and not img_mask.any():
+                continue
 
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
