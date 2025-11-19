@@ -168,12 +168,22 @@ def create_cached_torch_dataset(
 
     # Use cached dataset loader
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+
+    # Build delta_timestamps dict (same logic as in data_loader.py)
+    # Most keys use action_horizon timesteps, but "state" may need extra timesteps
+    delta_timestamps = {}
+    for key in data_config.action_sequence_keys:
+        if key == "state" and data_config.state_delta_timestamps_offset > 0:
+            # Load extra timesteps for state when offset is specified
+            num_timesteps = action_horizon + data_config.state_delta_timestamps_offset
+            delta_timestamps[key] = [t / dataset_meta.fps for t in range(num_timesteps)]
+        else:
+            # Standard: load action_horizon timesteps
+            delta_timestamps[key] = [t / dataset_meta.fps for t in range(action_horizon)]
+
     dataset = CachedLeRobotDataset(
         repo_id=data_config.repo_id,
-        delta_timestamps={
-            key: [t / dataset_meta.fps for t in range(action_horizon)]
-            for key in data_config.action_sequence_keys
-        },
+        delta_timestamps=delta_timestamps,
     )
 
     if data_config.prompt_from_task:

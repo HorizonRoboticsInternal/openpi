@@ -88,6 +88,13 @@ class DataConfig:
     # LeRobot dataset is using different keys to represent the action.
     action_sequence_keys: Sequence[str] = ("actions",)
 
+    # Additional timesteps to load for state beyond action_horizon.
+    # This is useful when computing actions from state differences.
+    # If set to N, state will be loaded with action_horizon + N timesteps.
+    # e.g., to apply allenzren relabeling: 
+    # action_horizon=4, state_delta_timestamps_offset=1 → loads 5 states, computes 4 deltas
+    state_delta_timestamps_offset: int = 0
+
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
@@ -430,7 +437,7 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
     """
     Config for training on Bridge dataset in LeRobot format (for PyTorch training).
 
-    This follows the third-party open-pi-zero implementation preprocessing:
+    This follows the allenzren open-pi-zero implementation preprocessing:
     - Quantile normalization to [-1, 1] range (not z-score)
     - Uses image_0 (primary) and image_1 (secondary), NOT wrist camera
     - Skips ~30% of episodes without language annotations during conversion
@@ -442,16 +449,27 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
 
     Bridge dataset has 7D actions: [x, y, z, roll, pitch, yaw, gripper] (EEF_POS)
     and 7D proprioceptive state (POS_EULER: xyz + euler angles + gripper).
+
+    Action preprocessing modes:
+    - use_allenzren_relabeling=False (default): Use original Bridge delta actions as-is
+    - use_allenzren_relabeling=True: Recompute actions from consecutive state differences
+      (matches allenzren open-pi-zero behavior which uses "reached proprio" instead of
+      commanded actions)
     """
 
     # Which cameras were included during conversion (must match convert_bridge_to_lerobot.py)
     # Default: ["image_0", "image_1"] for primary and secondary views (NOT wrist)
     camera_keys: tuple[str, ...] = ("image_0", "image_1")
 
+    # Whether to relabel actions using allenzren open-pi-zero style preprocessing
+    # If True: recomputes first 6 action dims from state[t+1] - state[t]
+    # If False: uses original Bridge delta actions
+    use_allenzren_relabeling: bool = False
+
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # Map LeRobot dataset keys to Bridge policy expected format
-        # BridgeInputs expects: observation/image, observation/wrist_image, observation/state
+        # BridgeInputs expects: observation/image, observation/secondary_image, observation/state
         # Note: LeRobot datasets store keys at root level (e.g., "state", "image_0", "task")
         # not nested under "observation/" prefix
         #
@@ -465,7 +483,7 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
         }
 
         # Map cameras: image_0 (primary) and image_1 (secondary, NOT wrist)
-        # Following third-party open-pi-zero implementation
+        # Following allenzren open-pi-zero implementation
         if len(self.camera_keys) >= 1:
             repack_dict["observation/image"] = self.camera_keys[0]
         if len(self.camera_keys) >= 2:
@@ -481,24 +499,38 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
             outputs=[bridge_policy.BridgeOutputs()],
         )
 
-        # Bridge dataset has absolute position actions, convert to delta actions
-        # Apply delta transform to all 7 dimensions (x, y, z, roll, pitch, yaw, gripper)
-        delta_action_mask = _transforms.make_bool_mask(7)
-        data_transforms = data_transforms.push(
-            inputs=[_transforms.DeltaActions(delta_action_mask)],
-            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-        )
+        # Optionally apply allenzren action relabeling
+        if self.use_allenzren_relabeling:
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.RelabelBridgeActions()],
+            )
 
         model_transforms = ModelTransformFactory()(model_config)
 
-        # IMPORTANT: Use quantile normalization to [-1, 1] range (following third-party implementation)
+        # IMPORTANT: Use quantile normalization to [-1, 1] range (following allenzren implementation)
         # Bridge has outliers (e.g., action values of 80) that cause training instability with z-score
+        base_config = self.create_base_config(assets_dirs, model_config)
+
+        # When using allenzren relabeling, we need to:
+        # 1. Load state as a sequence (add "state" to action_sequence_keys)
+        # 2. Load one extra state timestep (set state_delta_timestamps_offset=1)
+        # This allows RelabelBridgeActions to compute action_horizon deltas from action_horizon+1 states
+        action_sequence_keys = base_config.action_sequence_keys
+        state_delta_timestamps_offset = 0
+        if self.use_allenzren_relabeling:
+            # Add "state" to the sequence keys so LeRobot loads it as a sequence
+            action_sequence_keys = tuple(list(action_sequence_keys) + ["state"])
+            # Load one extra state timestep (N+1 states → N deltas)
+            state_delta_timestamps_offset = 1
+
         return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
+            base_config,
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             use_quantile_norm=True,  # Maps 1st-99th percentile to [-1, 1]
+            action_sequence_keys=action_sequence_keys,
+            state_delta_timestamps_offset=state_delta_timestamps_offset,
         )
 
 
@@ -1048,20 +1080,48 @@ _CONFIGS = [
     #
     TrainConfig(
         # This config is for fine-tuning pi0 on the Bridge dataset (LeRobot format).
-        # Bridge dataset contains 60,096 trajectories of WidowX robot manipulation tasks.
-        # See examples/bridge/TRAINING_GUIDE.md for steps to run training with this config 
+        # This version mimics the allenzren open-pi-zero preprocessing and action_horizon.
         name="pi0_bridge_finetune",
         model=pi0_config.Pi0Config(
-            action_dim=32,  # Pad to 32 dims (Bridge has 7D actions)
+            action_dim=32,  # Pretrained model requires 32D (Bridge has 7D, padded to 32D)
+            action_horizon=4,  # Match allenzren open-pi-zero
+        ),
+        data=LeRobotBridgeDataConfig(
+            repo_id="bridge_lerobot_224",
+            assets=AssetsConfig(asset_id="bridge_lerobot_224"),
+            camera_keys=("image_0", "image_1"),
+            use_allenzren_relabeling=True,  # Recompute actions from state differences
+        ),
+        # Load pretrained weights from the base model checkpoint
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # PyTorch weights converted from JAX checkpoint
+        pytorch_weight_path="/home/jerry/.cache/openpi/pi0_base_pytorch",
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=3e-5,
+            decay_steps=50_000,
+            decay_lr=3e-6,
+        ),
+        num_train_steps=50_000,
+        batch_size=128,
+        log_interval=100,
+        save_interval=5000,
+        keep_period=10_000,
+        num_workers=2,  # Can use multiple workers with LeRobot format
+    ),
+    TrainConfig(
+        # This config is for fine-tuning pi0 on the Bridge dataset (LeRobot format).
+        # This version uses original Bridge actions without allenzren relabeling.
+        name="pi0_bridge_original_action_finetune",
+        model=pi0_config.Pi0Config(
+            action_dim=32,  # Pretrained model requires 32D (Bridge has 7D, padded to 32D)
             action_horizon=16,
         ),
         data=LeRobotBridgeDataConfig(
-            # Replace with your converted LeRobot dataset repo_id
-            # This should match the --repo_name used in convert_bridge_to_lerobot.py
             repo_id="bridge_lerobot_224",
             assets=AssetsConfig(asset_id="bridge_lerobot_224"),
-            # Specify which cameras were included during conversion
             camera_keys=("image_0", "image_1"),
+            use_allenzren_relabeling=False,  # Use original Bridge delta actions
         ),
         # Load pretrained weights from the base model checkpoint
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
