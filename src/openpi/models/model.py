@@ -18,7 +18,6 @@ import orbax.checkpoint as ocp
 import safetensors
 import torch
 
-from openpi.models_pytorch import pi0_pytorch
 from openpi.shared import image_tools
 import openpi.shared.array_typing as at
 
@@ -243,11 +242,11 @@ class BaseModelConfig(abc.ABC):
 
     def load_pytorch(self, train_config, weight_path: str):
         logger.info(f"train_config: {train_config}")
-        model = pi0_pytorch.PI0Pytorch(config=train_config.model)
+        model = train_config.model.create_pytorch()
 
         if train_config.pytorch_weight_path is not None:
             model_path = os.path.join(train_config.pytorch_weight_path, "model.safetensors")
-            safetensors.torch.load_model(model, model_path)
+            safetensors.torch.load_model(model, model_path, train_config.strict_load)
 
         model.paligemma_with_expert.prepare_lora_training(train_config.vlm_lora_config, train_config.expert_lora_config)
 

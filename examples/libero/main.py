@@ -41,6 +41,7 @@ class Args:
     # Utils
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
+    log_file: pathlib.Path = pathlib.Path("data/libero/libero_eval.log")  # Path to save text logs
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -215,5 +216,11 @@ def _quat2axisangle(quat):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    tyro.cli(eval_libero)
+    args = tyro.cli(Args)
+    handlers = [logging.StreamHandler()]
+    if args.log_file:
+        log_path = pathlib.Path(args.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_path))
+    logging.basicConfig(level=logging.INFO, handlers=handlers, force=True)
+    eval_libero(args)
