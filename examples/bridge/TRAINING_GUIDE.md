@@ -1,6 +1,6 @@
 # Bridge data preprocessing and Pi0 finetuning
 
-This guide covers the complete pipeline from converting LeRobot dataset to training PI0 model, with Allenren's open-pi-zero preprocessing (quantile normalization, camera setup, delta actions) properly applied.
+This guide covers the complete pipeline from converting LeRobot dataset to training PI0 model, with options to match Allenren's open-pi-zero preprocessing or use original Bridge actions.
 
 ## Step 1: Download the Bridge TFDS data and convert to LeRobot format
 
@@ -48,26 +48,51 @@ print(f"Features: {list(dataset.features.keys())}")
 
 ## Step 2: Compute Normalization Statistics
 
-**CRITICAL**: The following things are configured in `src/openpi/training/config.py`
-- Config name: `pi0_bridge_finetune`
-- Dataset repo_id: `bridge_lerobot_224`
-- Bridge uses **quantile normalization** (1st-99th percentile → [-1, 1]), not z-score normalizatin.
+**CRITICAL**: OpenPI provides two training configurations for Bridge dataset:
+- **`pi0_bridge_original_action_finetune`**: Uses original Bridge delta actions, action_horizon=16
+- **`pi0_bridge_finetune`**: Mimics allenzren's open-pi-zero preprocessing (action relabeling from state differences), action_horizon=4
 
+Both configs use:
+- Dataset repo_id: `bridge_lerobot_224`
+- **Quantile clipping and scaling** (1st-99th percentile → [-1, 1]), not z-score normalization
+- Same camera setup (image_0 + image_1)
+
+**Choose which config to use:**
+
+### Option A: allenzren's Preprocessing
 ```bash
 export HF_DATASETS_CACHE=/data/jerry/datasets/openx/cache/datasets
 export HF_LEROBOT_HOME=/data/jerry/datasets/openx
 
-# max-frames is optional, but default value (using full dataset) takes a long time
 uv run python scripts/compute_norm_stats.py --config-name pi0_bridge_finetune --max-frames 100000
 ```
+
+This config:
+- Recomputes first 6 action dimensions from consecutive state differences: `action[i] = state[i+1] - state[i]`
+- Uses "reached proprio" (actual state transitions) instead of commanded actions
+- Matches action_horizon=4 from allenzren's implementation
+- Best for replicating third-party results
+
+### Option B: Original Bridge Actions (Default)
+```bash
+export HF_DATASETS_CACHE=/data/jerry/datasets/openx/cache/datasets
+export HF_LEROBOT_HOME=/data/jerry/datasets/openx
+
+uv run python scripts/compute_norm_stats.py --config-name pi0_bridge_original_action_finetune --max-frames 100000
+```
+
+This config:
+- Uses original Bridge delta actions as-is
+- action_horizon=16 for longer future prediction
+- Simpler preprocessing pipeline
 
 **What this does:**
 - With max-frames specified, only iterates through this number of frames of the converted Bridge dataset
 - Computes normalization statistics for `state` and `actions`
 - **Mean/std**: For reference (not used during training with quantile norm)
 - **q01/q99**: 1st and 99th percentile values (used for quantile normalization)
-- Saves to: `assets/pi0_bridge_finetune/bridge_lerobot_224/norm_stats.json`
-- Cache: for the first time running `compute_norm_stats.py`, it also generates Arrow files of the same size as the lerobot `data` (from Step 1) and caches in `HF_DATASETS_CACHE`.
+- Saves to: `assets/<config_name>/bridge_lerobot_224/norm_stats.json`
+- Cache: for the first time running `compute_norm_stats.py`, it also generates Arrow files of the same size as the lerobot `data` (from Step 1) and caches in `HF_DATASETS_CACHE`
 
 You can verify the stats were computed correctly:
 ```bash
@@ -78,29 +103,62 @@ ls -lh assets/pi0_bridge_finetune/bridge_lerobot_224/norm_stats.json
 cat assets/pi0_bridge_finetune/bridge_lerobot_224/norm_stats.json
 ```
 
-## Step 3: Understand the Training Config
+## Step 3: Understand the Training Configs
 
-The `pi0_bridge_finetune` config in `src/openpi/training/config.py` has incorporated Allenren/open-pi-zero's preprocessing:
+OpenPI provides two configs in `src/openpi/training/config.py` for Bridge dataset training:
 
-**Key config settings:**
+### Config 1: `pi0_bridge_finetune` (allenzren's preprocessing)
+
+**Key settings:**
 ```python
-LeRobotBridgeDataConfig(
-    repo_id="bridge_lerobot_224",  # dataset name (must match the --repo_name used in Step 0)
-    camera_keys=("image_0", "image_1"),  # Primary + secondary (NOT wrist)
-    assets=AssetsConfig(asset_id="bridge_lerobot_224"),  # MUST match repo_id for norm stats path
+model=pi0_config.Pi0Config(
+    action_dim=32,  # Pretrained model requires 32D (Bridge has 7D, padded to 32D)
+    action_horizon=4,  # Match allenzren's open-pi-zero
 )
-# Note: use_quantile_norm=True is automatically set for Bridge in the config
+data=LeRobotBridgeDataConfig(
+    repo_id="bridge_lerobot_224",
+    camera_keys=("image_0", "image_1"),  # Primary + secondary (NOT wrist)
+    use_allenzren_relabeling=True,  # Recompute actions from state differences
+    assets=AssetsConfig(asset_id="bridge_lerobot_224"),
+)
 ```
 
 **Preprocessing pipeline:**
 1. **Camera mapping**: `image_0` → primary, `image_1` → secondary
-2. **Delta actions**: Absolute EE positions converted to delta actions
-3. **Quantile normalization**: Maps q01-q99 to [-1, 1] for both state and actions
+2. **Action relabeling**:
+   - Loads state sequence with 5 timesteps (for action_horizon=4)
+   - Recomputes first 6 action dims: `action[i][:6] = state[i+1][:6] - state[i][:6]`
+   - Uses "reached proprio" (actual state transitions) instead of commanded actions
+   - Keeps original gripper action (dimension 6)
+3. **Quantile clipping and scaling**: Maps q01-q99 to [-1, 1] for both state and actions
 4. **Action padding**: 7D actions padded to 32D (PI0 requirement)
+
+### Config 2: `pi0_bridge_original_action_finetune` (Original Bridge Actions)
+
+**Key settings:**
+```python
+model=pi0_config.Pi0Config(
+    action_dim=32,  # Pretrained model requires 32D (Bridge has 7D, padded to 32D)
+    action_horizon=16,  # Longer horizon for better future prediction
+)
+data=LeRobotBridgeDataConfig(
+    repo_id="bridge_lerobot_224",
+    camera_keys=("image_0", "image_1"),
+    use_allenzren_relabeling=False,  # Use original Bridge delta actions
+    assets=AssetsConfig(asset_id="bridge_lerobot_224"),
+)
+```
+
+**Preprocessing pipeline:**
+1. **Camera mapping**: `image_0` → primary, `image_1` → secondary
+2. **Original actions**: Uses Bridge's native delta actions (commanded actions)
+3. **Quantile clipping and scaling**: Maps q01-q99 to [-1, 1] for both state and actions
+4. **Action padding**: 7D actions padded to 32D (PI0 requirement)
+
 
 ## Step 4: Launch Default Training
 
-The default training of Pi0 requires both the lerobot dataset (from Step 1) and the cached Arrow files (from Step 2), as well as the `norm_stats.json` from Step 2. 
+The default training of Pi0 requires both the lerobot dataset (from Step 1) and the cached Arrow files (from Step 2), as well as the `norm_stats.json` from Step 2.
 
 Set environment variables (same as Step 2):
 ```bash
@@ -108,19 +166,36 @@ export HF_DATASETS_CACHE=/data/jerry/datasets/openx/cache/datasets
 export HF_LEROBOT_HOME=/data/jerry/datasets/openx
 ```
 
+**Choose which config to use** (must match the config used in Step 2):
+
 ### Option A: Single GPU Training
 
+**With allenzren's preprocessing:**
 ```bash
 uv run python scripts/train_pytorch.py pi0_bridge_finetune \
+    --exp-name my_bridge_experiment_allenzren
+```
+
+**With original Bridge actions:**
+```bash
+uv run python scripts/train_pytorch.py pi0_bridge_original_action_finetune \
     --exp-name my_bridge_experiment
 ```
 
 ### Option B: Multi-GPU Training (Recommended for 60K episodes)
 
+**With allenzren's preprocessing:**
 ```bash
 # Use all available GPUs (replace 2 with your GPU count)
 uv run torchrun --standalone --nnodes=1 --nproc_per_node=2 \
     scripts/train_pytorch.py pi0_bridge_finetune \
+    --exp-name my_bridge_experiment_allenzren
+```
+
+**With original Bridge actions:**
+```bash
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=2 \
+    scripts/train_pytorch.py pi0_bridge_original_action_finetune \
     --exp-name my_bridge_experiment
 ```
 
@@ -133,12 +208,16 @@ uv run python scripts/train_pytorch.py pi0_bridge_finetune \
 ```
 
 ### Verify training scripts
-`./verify_training.sh`
+`./verify_training.sh` - Uses `pi0_bridge_finetune` (allenzren) by default
 
-## Step 4 (Alternative): Lauch Cache-only Training
+## Step 4 (Alternative): Launch Cache-only Training
 
 Since the cached Arrow files under `HF_DATASETS_CACHE` is what will actually be used, `data` under `bridge_lerobot_224` can be bypassed by some overriding of `LeRobotDataset`.
-For cache-only training, only `bridge_lerobot_224/meta` and cached Arrow files under `HF_DATASETS_CACHE` are needed.
+For cache-only training, only `bridge_lerobot_224/meta` and cached Arrow files under `HF_DATASETS_CACHE` are needed. 
+
+**Pros and Cons for cache-only training:**
+- Pros: `bridge_lerobot_224/data` can be removed to save storage space.
+- Cons: If data preprocessing changes, a reconversion from the lerobot datasets to the cached arrow format is needed. In that case, `bridge_lerobot_224/data` is needed.
 
 ### Verify training scripts
 `./verify_training_cache_only.sh`
@@ -173,15 +252,9 @@ python -m cluster_train --job_script openpi/examples/bridge/job_openpi_bridge_ca
 
 ### Training Configuration Details
 
-**From `pi0_bridge_finetune` config:**
+**Both configs share these training parameters:**
 
 ```python
-# Model
-model = pi0_config.Pi0Config(
-    action_dim=32,       # Padded from 7D Bridge actions
-    action_horizon=16,   # Predict 16 future actions
-)
-
 # Learning rate schedule
 lr_schedule = CosineDecaySchedule(
     warmup_steps=1_000,
@@ -194,6 +267,30 @@ lr_schedule = CosineDecaySchedule(
 num_train_steps=50_000
 batch_size=128
 num_workers=2  # Parallel data loading workers
+```
+
+**Config-specific differences:**
+
+**`pi0_bridge_finetune`:**
+```python
+model = pi0_config.Pi0Config(
+    action_dim=32,       # Required by pretrained model (Bridge has 7D, padded to 32D)
+    action_horizon=4,    # Match Allenren's implementation
+)
+data = LeRobotBridgeDataConfig(
+    use_allenzren_relabeling=True,  # Recompute actions from state differences
+)
+```
+
+**`pi0_bridge_original_action_finetune`:**
+```python
+model = pi0_config.Pi0Config(
+    action_dim=32,       # Required by pretrained model (Bridge has 7D, padded to 32D)
+    action_horizon=16,   # Longer horizon for better prediction
+)
+data = LeRobotBridgeDataConfig(
+    use_allenzren_relabeling=False,  # Use original Bridge actions
+)
 ```
 
 You can also override config parameters via command line:

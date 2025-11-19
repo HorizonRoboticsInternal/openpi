@@ -1,5 +1,5 @@
 """
-Script for converting Bridge dataset (TFDS format) to LeRobot format.
+Script for converting RAIL Bridge dataset (TFDS format) to LeRobot format.
 
 This is a minimal conversion script similar to the Libero example.
 

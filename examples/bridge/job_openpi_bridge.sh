@@ -87,7 +87,7 @@ export TORCHINDUCTOR_CACHE_DIR=$HOME/.cache/torchinductor
 # Launch Training with torchrun
 # ======================
 
-# Enter the open_pi_zero directory
+# Enter the openpi directory
 cd code/openpi
 
 # Use existing UV_CACHE_DIR from env.sh for Python installations
