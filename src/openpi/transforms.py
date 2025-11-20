@@ -245,6 +245,65 @@ class AbsoluteActions(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class RelabelBridgeActions(DataTransformFn):
+    """Relabels Bridge actions to match allenzren open-pi-zero preprocessing.
+
+    This recomputes the first 6 action dimensions (x, y, z, roll, pitch, yaw)
+    from consecutive state differences: state[t+1] - state[t].
+    The gripper action (dimension 6) is kept from the original actions.
+
+    This matches the behavior of the allenzren implementation which uses
+    "reached proprio" (actual state transitions) instead of commanded actions.
+
+    IMPORTANT: This transform requires that "state" is loaded as a sequence with
+    one extra timestep beyond action_horizon, which is handled in 
+    LeRobotBridgeDataConfig by:
+    1. Adding "state" to action_sequence_keys
+    2. Setting state_delta_timestamps_offset=1
+
+    Example: action_horizon=4
+    - Input: state shape (5, 7), actions shape (4, 7)
+    - Computes: 4 deltas from 5 states
+    - Output: state shape (7,), actions shape (4, 7)
+
+    References:
+        - allenzren repo: https://github.com/allenzren/open-pi-zero
+        - Function: src/data/utils/data_utils.py::relabel_actions()
+    """
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "state" not in data or "actions" not in data:
+            return data
+
+        state = np.asarray(data["state"])  # [action_horizon + 1, 7]
+        actions = np.asarray(data["actions"])  # [action_horizon, 7]
+
+        # Verify that state is a sequence
+        if state.ndim == 1:
+            raise ValueError(
+                "RelabelBridgeActions requires 'state' to be a sequence. "
+                "Make sure 'state' is included in action_sequence_keys when calling this transform."
+            )
+
+        # Compute relabeled actions from consecutive state differences
+        # relabeled_actions[i] = state[i+1, :6] - state[i, :6]
+        # This gives us the actual state transitions (reached proprio)
+        relabeled_actions = state[1:, :6] - state[:-1, :6]  # [action_horizon, 6]
+
+        # Combine with original gripper actions
+        data["actions"] = np.concatenate([
+            relabeled_actions,
+            actions[:, 6:7]  # Original gripper action
+        ], axis=1)
+
+        # Keep only the state of current observation, maching the training format.
+        # Since we don't need the full sequence after relabeling. 
+        data["state"] = state[0]
+
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizePrompt(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
     discrete_state_input: bool = False
