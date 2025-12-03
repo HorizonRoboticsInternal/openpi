@@ -318,8 +318,7 @@ def train_step(model: torch.nn.Module, batch: Any, device: torch.device):
     elif isinstance(losses, torch.Tensor):
         losses = {"loss": losses}
     else:
-        assert isinstance(losses, dict), (
-            "Model forward must return a tensor or a dict/tuple/list of tensors.")
+        assert isinstance(losses, dict), "Model forward must return a tensor or a dict/tuple/list of tensors."
 
     losses = jax.tree.map(lambda x: x.mean(), losses)
 
@@ -547,7 +546,9 @@ def train_loop(config: _config.TrainConfig):
         if use_ddp and hasattr(loader, "set_epoch"):
             loader.set_epoch(global_step // len(loader))
 
+        time_loading_start = time.time()
         for batch in loader:
+            data_loading_time = time.time() - time_loading_start
             # Check if we've reached the target number of steps
             if global_step >= config.num_train_steps:
                 break
@@ -605,6 +606,7 @@ def train_loop(config: _config.TrainConfig):
                     log_payload = {
                         "step": global_step,
                         "time_per_step": elapsed / config.log_interval,
+                        "data_loading_time": data_loading_time,
                         **avg_info,
                     }
                     wandb.log(log_payload, step=global_step)
@@ -622,6 +624,7 @@ def train_loop(config: _config.TrainConfig):
                 pbar.set_postfix(
                     {"loss": f"{loss.item():.4f}", "lr": f"{optim.param_groups[0]['lr']:.2e}", "step": global_step}
                 )
+            time_loading_start = time.time()
 
     # Close progress bar
     if pbar is not None:
