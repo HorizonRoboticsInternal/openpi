@@ -91,7 +91,7 @@ class DataConfig:
     # Additional timesteps to load for state beyond action_horizon.
     # This is useful when computing actions from state differences.
     # If set to N, state will be loaded with action_horizon + N timesteps.
-    # e.g., to apply allenzren relabeling: 
+    # e.g., to apply allenzren relabeling:
     # action_horizon=4, state_delta_timestamps_offset=1 → loads 5 states, computes 4 deltas
     state_delta_timestamps_offset: int = 0
 
@@ -489,9 +489,7 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
         if len(self.camera_keys) >= 2:
             repack_dict["observation/secondary_image"] = self.camera_keys[1]
 
-        repack_transform = _transforms.Group(
-            inputs=[_transforms.RepackTransform(repack_dict)]
-        )
+        repack_transform = _transforms.Group(inputs=[_transforms.RepackTransform(repack_dict)])
 
         # Create input/output transforms
         data_transforms = _transforms.Group(
@@ -519,7 +517,7 @@ class LeRobotBridgeDataConfig(DataConfigFactory):
         state_delta_timestamps_offset = 0
         if self.use_allenzren_relabeling:
             # Add "state" to the sequence keys so LeRobot loads it as a sequence
-            action_sequence_keys = tuple(list(action_sequence_keys) + ["state"])
+            action_sequence_keys = (*action_sequence_keys, "state")
             # Load one extra state timestep (N+1 states → N deltas)
             state_delta_timestamps_offset = 1
 
@@ -661,10 +659,9 @@ class TrainConfig:
     @property
     def checkpoint_dir(self) -> pathlib.Path:
         """Get the checkpoint directory for this config."""
-        return pathlib.Path(self.checkpoint_base_dir).resolve()
-        # if not self.exp_name:
-        #     raise ValueError("--exp_name must be set")
-        # return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+        if not self.exp_name:
+            raise ValueError("--exp_name must be set")
+        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
 
     @property
     def trainable_filter(self) -> nnx.filterlib.Filter:
