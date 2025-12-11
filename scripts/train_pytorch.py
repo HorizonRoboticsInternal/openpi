@@ -560,19 +560,24 @@ def train_loop(config: _config.TrainConfig):
             for pg in optim.param_groups:
                 pg["lr"] = lr_schedule(global_step)
 
+            t0 = time.time()
             losses = train_step(model, batch, device)
+            train_step_time = time.time() - t0
             loss = losses["loss"]
 
             # Log memory usage after backward pass
             if global_step < 5 and is_main and torch.cuda.is_available():
                 log_memory_usage(device, global_step, "after_backward")
 
+            t0 = time.time()
             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
 
             # Optimizer step
             optim.step()
             optim.zero_grad(set_to_none=True)
+            optim_step_time = time.time() - t0
+            iter_time = time.time() - time_loading_start
 
             # Clear gradients more aggressively
             for param in model.parameters():
@@ -605,8 +610,11 @@ def train_loop(config: _config.TrainConfig):
                 if config.wandb_enabled and len(infos) > 0:
                     log_payload = {
                         "step": global_step,
-                        "time_per_step": elapsed / config.log_interval,
-                        "data_loading_time": data_loading_time,
+                        "time/avg_per_iter": elapsed / config.log_interval,
+                        "time/data_loading": data_loading_time,
+                        "time/train_step": train_step_time,
+                        "time/optim_step": optim_step_time,
+                        "time/iteration": iter_time,
                         **avg_info,
                     }
                     wandb.log(log_payload, step=global_step)
