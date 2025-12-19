@@ -159,14 +159,22 @@ class PI0Pytorch(nn.Module):
         safetensors.torch.save_file(state_dict, weight_path)
 
     def load_model(self, weight_path: str | os.PathLike, *, only_trainable: bool = True):
-        state_dict = get_dedup_state_dict(self, only_trainable=only_trainable)
         loaded_state_dict = safetensors.torch.load_file(weight_path)
-        assert set(loaded_state_dict.keys()) == set(state_dict.keys()), (
-            "Loaded state dict keys do not match model state dict keys."
-            "Mismatched keys: "
-            f"{set(loaded_state_dict.keys()).symmetric_difference(set(state_dict.keys()))}"
-        )
-        self.load_state_dict(loaded_state_dict, strict=False)
+        missing, unexpected = self.load_state_dict(loaded_state_dict, strict=False)
+        if unexpected:
+            raise ValueError(f"Unexpected keys in loaded state dict: {unexpected}")
+
+        # We need to check not all of the keys for a shared tensor are missing.
+        state_dict = self.state_dict(keep_vars=True)
+        shared_tensor_count: defaultdict[int, int] = defaultdict(int)
+        for v in state_dict.values():
+            shared_tensor_count[id(v)] += 1
+        for k in missing:
+            if not only_trainable or state_dict[k].requires_grad:
+                shared_tensor_count[id(state_dict[k])] -= 1
+        missing_keys = [k for k in state_dict if shared_tensor_count[id(state_dict[k])] == 0]
+        if missing_keys:
+            raise ValueError(f"Missing keys in loaded state dict: {missing_keys}")
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
