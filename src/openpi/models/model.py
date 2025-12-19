@@ -250,8 +250,7 @@ class BaseModelConfig(abc.ABC):
 
         model.paligemma_with_expert.prepare_lora_training(train_config.vlm_lora_config, train_config.expert_lora_config)
 
-        if train_config.freeze_vlm:
-            model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
+        train_config.freeze_torch_parameters(model)
 
         model.load_model(weight_path)
         return model

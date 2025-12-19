@@ -672,6 +672,17 @@ class TrainConfig:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
+    def freeze_torch_parameters(self, model) -> None:
+        """Freeze parameters based on the freeze_filter."""
+        if self.freeze_vlm:
+            model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
+        predicate = nnx.filterlib.to_predicate(self.freeze_filter)
+        for name, param in model.named_parameters():
+            parts = name.split(".")
+            if predicate(parts, param):
+                logging.info(f"Freezing parameter: {name}")
+                param.requires_grad = False
+
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
