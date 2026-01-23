@@ -251,7 +251,14 @@ class BaseModelConfig(abc.ABC):
 
         model.paligemma_with_expert.prepare_lora_training(train_config.vlm_lora_config, train_config.expert_lora_config)
 
-        train_config.freeze_torch_parameters(model)
+        frozen = train_config.freeze_torch_parameters(model)
+
+        if train_config.pytorch_weight_path is None:
+            assert not frozen, "pytorch_weight_path must be provided when freezing parameters."
+            assert train_config.vlm_lora_config is None, "pytorch_weight_path must be provided when using VLM LoRA."
+            assert (
+                train_config.expert_lora_config is None
+            ), "pytorch_weight_path must be provided when using expert LoRA."
 
         logging.info(f"Loading model weights from {weight_path}")
         model.load_model(weight_path)
