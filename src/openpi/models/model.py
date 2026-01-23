@@ -245,7 +245,7 @@ class BaseModelConfig(abc.ABC):
         model = train_config.model.create_pytorch()
 
         if train_config.pytorch_weight_path is not None:
-            logging.info(f"Loading model weights from {train_config.pytorch_weight_path}")
+            logging.info(f"Loading original pytorch model weights from {train_config.pytorch_weight_path}")
             model_path = os.path.join(train_config.pytorch_weight_path, "model.safetensors")
             safetensors.torch.load_model(model, model_path, train_config.strict_load)
 
