@@ -245,14 +245,22 @@ class BaseModelConfig(abc.ABC):
         model = train_config.model.create_pytorch()
 
         if train_config.pytorch_weight_path is not None:
+            logging.info(f"Loading original pytorch model weights from {train_config.pytorch_weight_path}")
             model_path = os.path.join(train_config.pytorch_weight_path, "model.safetensors")
             safetensors.torch.load_model(model, model_path, train_config.strict_load)
 
         model.paligemma_with_expert.prepare_lora_training(train_config.vlm_lora_config, train_config.expert_lora_config)
 
-        if train_config.freeze_vlm:
-            model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
+        frozen = train_config.freeze_torch_parameters(model)
 
+        if train_config.pytorch_weight_path is None:
+            assert not frozen, "pytorch_weight_path must be provided when freezing parameters."
+            assert train_config.vlm_lora_config is None, "pytorch_weight_path must be provided when using VLM LoRA."
+            assert (
+                train_config.expert_lora_config is None
+            ), "pytorch_weight_path must be provided when using expert LoRA."
+
+        logging.info(f"Loading model weights from {weight_path}")
         model.load_model(weight_path)
         return model
 

@@ -80,7 +80,7 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, enabled: bool = T
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint directory {ckpt_dir} does not exist.")
 
-    if resuming:
+    if resuming and not wandb.use_tensorboard():
         run_id = (ckpt_dir / "wandb_id.txt").read_text().strip()
         wandb.init(id=run_id, resume="must", project=config.project_name, summary_dir=config.summary_dir)
     else:
@@ -471,9 +471,7 @@ def train_loop(config: _config.TrainConfig):
         logging.info(f"Loaded PyTorch weights from {config.pytorch_weight_path}")
 
     model.paligemma_with_expert.prepare_lora_training(config.vlm_lora_config, config.expert_lora_config)
-
-    if config.freeze_vlm:
-        model.paligemma_with_expert.paligemma.requires_grad_(False)  # noqa: FBT003
+    config.freeze_torch_parameters(model)
 
     if use_ddp:
         model = torch.nn.parallel.DistributedDataParallel(
