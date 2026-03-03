@@ -53,6 +53,9 @@ class BridgeInputs(transforms.DataTransformFn):
 
     def __call__(self, data: dict) -> dict:
         # Bridge state is 7D: [x, y, z, roll, pitch, yaw, gripper]
+
+
+        
         state = np.asarray(data["observation/state"])
 
         # Parse images to uint8 (H,W,C) format
