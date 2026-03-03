@@ -124,7 +124,7 @@ class Observation(Generic[ArrayT]):
             images=data["image"],
             image_masks=data["image_mask"],
             state=data["state"],
-            segment_mask=data["segment_mask"],
+            segment_mask=data["segment_mask"] if "segment_mask" in data else torch.zeros_like(data["state"]) < 0,
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
