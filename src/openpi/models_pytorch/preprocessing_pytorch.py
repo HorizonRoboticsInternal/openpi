@@ -31,9 +31,6 @@ def preprocess_observation_pytorch(
     if not set(image_keys).issubset(observation.images):
         raise ValueError(f"images dict missing keys: expected {image_keys}, got {list(observation.images)}")
     
-    print("=====preprocess")
-    print(observation)
-
     batch_shape = observation.state.shape[:-1]
 
     out_images = {}
@@ -169,6 +166,7 @@ def preprocess_observation_pytorch(
         images=out_images,
         image_masks=out_masks,
         state=observation.state,
+        segment_mask=observation.segment_mask,
         tokenized_prompt=observation.tokenized_prompt,
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,

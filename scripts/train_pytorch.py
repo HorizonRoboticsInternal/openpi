@@ -310,10 +310,6 @@ def log_memory_usage(device, step, phase="unknown"):
 
 
 def train_step(model: torch.nn.Module, batch: Any, device: torch.device):
-
-    print("======batch")
-    print(batch)
-
     # Forward pass
     losses = model(batch)
     # Ensure losses is a tensor and handle different return types
@@ -554,8 +550,6 @@ def train_loop(config: _config.TrainConfig):
             if global_step >= config.num_train_steps:
                 break
 
-            # print("===========train loop batch")
-            # print(batch)
             # The unified data loader returns (observation, actions) tuple
             batch = jax.tree.map(lambda x: x.to(device), batch)  # noqa: PLW2901
 

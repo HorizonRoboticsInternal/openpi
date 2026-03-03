@@ -126,7 +126,6 @@ class Normalize(DataTransformFn):
     def __call__(self, data: DataDict) -> DataDict:
         if self.norm_stats is None:
             return data
-
         return apply_tree(
             data,
             self.norm_stats,
