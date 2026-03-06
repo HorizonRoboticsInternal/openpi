@@ -373,6 +373,9 @@ class PI0Pytorch(nn.Module):
         observation, actions = batch
         actions = actions.to(torch.float32)
 
+        valid_data = observation.valid_data
+
+
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
 
         if noise is None:
@@ -428,7 +431,9 @@ class PI0Pytorch(nn.Module):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        return F.mse_loss(u_t, v_t, reduction="none")
+        loss = F.mse_loss(u_t, v_t, reduction="none")
+        masked_loss = loss * valid_data.unsqueeze(-1)
+        return masked_loss
 
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
