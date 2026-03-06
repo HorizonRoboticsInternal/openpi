@@ -94,7 +94,7 @@ class Observation(Generic[ArrayT]):
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
 
-    segment_mask: at.Bool[ArrayT, "*b k"]
+    valid_data: at.Bool[ArrayT, "*b k"]
 
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
@@ -124,7 +124,7 @@ class Observation(Generic[ArrayT]):
             images=data["image"],
             image_masks=data["image_mask"],
             state=data["state"],
-            segment_mask=data["segment_mask"] if "segment_mask" in data else torch.zeros_like(data["state"]) < 0,
+            valid_data=data["valid_data"],
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
