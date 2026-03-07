@@ -316,10 +316,24 @@ class PI0Pytorch(nn.Module):
             att_masks += [1]
 
         # Embed timestep using sine-cosine positional encoding
+
         time_emb = create_sinusoidal_pos_embedding(
             timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=timestep.device
         )
         time_emb = time_emb.type(dtype=timestep.dtype)
+
+        if quality is not None:
+            quality = quality.mean(-1)
+            quality_emb = create_sinusoidal_pos_embedding(
+                quality,
+                self.action_in_proj.out_features,
+                min_period=4e-3,
+                max_period=4.0,
+                device=quality.device,
+            )
+            quality_emb = quality_emb.type(dtype=time_emb.dtype)
+            # ADD instead of CONCAT
+            time_emb = time_emb + quality_emb
 
         # Fuse timestep + action information using an MLP
         def action_proj_func(noisy_actions):
@@ -327,8 +341,10 @@ class PI0Pytorch(nn.Module):
 
         action_emb = self._apply_checkpoint(action_proj_func, noisy_actions)
 
+
         if not self.pi05:
             time_emb = time_emb[:, None, :].expand_as(action_emb)
+            print(time_emb.shape)
             action_time_emb = torch.cat([action_emb, time_emb], dim=2)
 
             # Apply MLP layers
@@ -351,30 +367,11 @@ class PI0Pytorch(nn.Module):
             action_time_emb = action_emb
             adarms_cond = time_emb
 
-        # --- QUALITY CONDITIONING SIMILAR TO TIME ---
-        if quality is not None:
-            # Ensure quality is float32
-            # [B, chunk_size]
-            quality = quality.to(torch.float32).mean(-1)
-    
-
-            # Embed quality using sinusoidal positional embedding
-            quality_emb = create_sinusoidal_pos_embedding(
-                quality, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=quality.device
-            )
-            quality_emb = quality_emb.type(dtype=noisy_actions.dtype)  # match action/time dtype
-            quality_emb = quality_emb[:, None, :].expand_as(action_emb)
-            print("====action_time_emb")
-            print(action_time_emb.shape)
-
-            print("====quality_emb_exp")
-            print(quality_emb.shape)
-            
-            # Concatenate along feature dimension
-            action_time_emb = torch.cat([action_time_emb, quality_emb], dim=-1)
-
         # Add to input tokens
         embs.append(action_time_emb)
+
+
+
 
         bsize, action_time_dim = action_time_emb.shape[:2]
         action_time_mask = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=timestep.device)
