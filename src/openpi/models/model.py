@@ -96,7 +96,7 @@ class Observation(Generic[ArrayT]):
 
     valid_data: at.Bool[ArrayT, "*b k"]
 
-    quality: at.Bool[ArrayT, "*b k"]
+    quality: at.Float[ArrayT, "*b k"]
 
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None

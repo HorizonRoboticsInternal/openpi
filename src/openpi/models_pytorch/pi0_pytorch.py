@@ -289,7 +289,7 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks
 
-    def embed_suffix(self, state, noisy_actions, timestep):
+    def embed_suffix(self, state, noisy_actions, timestep, quality=None):
         """Embed state, noisy_actions, timestep to prepare for Expert Gemma processing."""
         embs = []
         pad_masks = []
@@ -315,7 +315,7 @@ class PI0Pytorch(nn.Module):
             # Set attention masks so that image and language inputs do not attend to state or actions
             att_masks += [1]
 
-        # Embed timestep using sine-cosine positional encoding with sensitivity in the range [0, 1]
+        # Embed timestep using sine-cosine positional encoding
         time_emb = create_sinusoidal_pos_embedding(
             timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=timestep.device
         )
@@ -343,13 +343,35 @@ class PI0Pytorch(nn.Module):
             # time MLP (for adaRMS)
             def time_mlp_func(time_emb):
                 x = self.time_mlp_in(time_emb)
-                x = F.silu(x)  # swish == silu
+                x = F.silu(x)
                 x = self.time_mlp_out(x)
                 return F.silu(x)
 
             time_emb = self._apply_checkpoint(time_mlp_func, time_emb)
             action_time_emb = action_emb
             adarms_cond = time_emb
+
+        # --- QUALITY CONDITIONING SIMILAR TO TIME ---
+        if quality is not None:
+            # Ensure quality is float32
+            # [B, chunk_size]
+            quality = quality.to(torch.float32).mean(-1)
+    
+
+            # Embed quality using sinusoidal positional embedding
+            quality_emb = create_sinusoidal_pos_embedding(
+                quality, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0, device=quality.device
+            )
+            quality_emb = quality_emb.type(dtype=noisy_actions.dtype)  # match action/time dtype
+            quality_emb = quality_emb[:, None, :].expand_as(action_emb)
+            print("====action_time_emb")
+            print(action_time_emb.shape)
+
+            print("====quality_emb_exp")
+            print(quality_emb.shape)
+            
+            # Concatenate along feature dimension
+            action_time_emb = torch.cat([action_time_emb, quality_emb], dim=-1)
 
         # Add to input tokens
         embs.append(action_time_emb)
@@ -368,6 +390,7 @@ class PI0Pytorch(nn.Module):
 
         return embs, pad_masks, att_masks, adarms_cond
 
+
     def forward(self, batch, noise=None, time=None) -> Tensor:
         """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
         observation, actions = batch
@@ -375,10 +398,6 @@ class PI0Pytorch(nn.Module):
 
         valid_data = observation.valid_data
         quality = observation.quality
-
-        print("==quality")
-        print(quality)
-
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
 
@@ -393,7 +412,7 @@ class PI0Pytorch(nn.Module):
         u_t = noise - actions
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time, quality=quality)
         if (
             self.paligemma_with_expert.paligemma.language_model.layers[0].self_attn.q_proj.weight.dtype
             == torch.bfloat16
