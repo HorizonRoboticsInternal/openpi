@@ -374,6 +374,10 @@ class PI0Pytorch(nn.Module):
         actions = actions.to(torch.float32)
 
         valid_data = observation.valid_data
+        quality = observation.quality
+
+        print("==quality")
+        print(quality)
 
 
         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)

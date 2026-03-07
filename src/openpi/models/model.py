@@ -96,6 +96,8 @@ class Observation(Generic[ArrayT]):
 
     valid_data: at.Bool[ArrayT, "*b k"]
 
+    quality: at.Bool[ArrayT, "*b k"]
+
     # Tokenized prompt.
     tokenized_prompt: at.Int[ArrayT, "*b l"] | None = None
     # Tokenized prompt mask.
@@ -127,6 +129,7 @@ class Observation(Generic[ArrayT]):
             image_masks=data["image_mask"],
             state=data["state"],
             valid_data=data["valid_data"],
+            quality=data["quality"],
             tokenized_prompt=data.get("tokenized_prompt"),
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
