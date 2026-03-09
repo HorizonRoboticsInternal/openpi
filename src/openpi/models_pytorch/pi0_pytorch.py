@@ -344,7 +344,6 @@ class PI0Pytorch(nn.Module):
 
         if not self.pi05:
             time_emb = time_emb[:, None, :].expand_as(action_emb)
-            print(time_emb.shape)
             action_time_emb = torch.cat([action_emb, time_emb], dim=2)
 
             # Apply MLP layers
