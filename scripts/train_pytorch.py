@@ -131,6 +131,25 @@ def build_datasets(config: _config.TrainConfig):
     return data_loader, data_loader.data_config()
 
 
+def average_scalar_dicts(infos: list[dict[str, float]]) -> dict[str, float]:
+    """Average scalar logs when optional keys are not present every step.
+
+    Some metrics only appear in certain regimes, e.g. AC diagnostics after
+    warmup or loss terms behind config flags. JAX tree_map requires identical
+    dict structure across all entries, so average per key over just the steps
+    where that key was emitted.
+    """
+    if not infos:
+        return {}
+    totals = {}
+    counts = {}
+    for info in infos:
+        for key, value in info.items():
+            totals[key] = totals.get(key, 0.0) + value
+            counts[key] = counts.get(key, 0) + 1
+    return {key: totals[key] / counts[key] for key in totals}
+
+
 def get_model_state_dict(model):
     """Get state dict from model, handling DDP wrapper."""
     return (
@@ -149,7 +168,84 @@ def get_model_parameters(model):
     )
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
+def get_model_module(model):
+    """Get the underlying module, handling DDP wrapper."""
+    return (
+        model.module
+        if isinstance(model, torch.nn.parallel.DistributedDataParallel)
+        else model
+    )
+
+
+class CpuEmaTracker:
+    """Tracks an EMA copy of the trainable model state on CPU.
+
+    The live model stays on GPU for training. Rank 0 keeps a CPU shadow copy so
+    EMA smoothing does not duplicate model weights in VRAM. Checkpoints then
+    save the EMA weights for inference while keeping the raw training weights
+    separately for resume.
+    """
+
+    def __init__(self, model, decay: float):
+        self.decay = float(decay)
+        module = get_model_module(model)
+        state_dict = openpi.models_pytorch.pi0_pytorch.get_dedup_state_dict(
+            module, only_trainable=True)
+        self.shadow = {k: self._clone_for_shadow(v) for k, v in state_dict.items()}
+
+    @staticmethod
+    def _clone_for_shadow(tensor: torch.Tensor) -> torch.Tensor:
+        shadow_dtype = torch.float32 if tensor.is_floating_point() else tensor.dtype
+        return tensor.detach().to(device="cpu", dtype=shadow_dtype).clone()
+
+    def update(self, model):
+        module = get_model_module(model)
+        state_dict = module.state_dict(keep_vars=True)
+        one_minus_decay = 1.0 - self.decay
+        for key, shadow_tensor in self.shadow.items():
+            current_tensor = state_dict[key].detach()
+            if shadow_tensor.is_floating_point():
+                current_cpu = current_tensor.to(
+                    device="cpu", dtype=shadow_tensor.dtype)
+                shadow_tensor.mul_(self.decay).add_(current_cpu,
+                                                    alpha=one_minus_decay)
+            else:
+                shadow_tensor.copy_(
+                    current_tensor.to(device="cpu", dtype=shadow_tensor.dtype))
+
+    def get_state_dict_for_save(self, model) -> dict[str, torch.Tensor]:
+        module = get_model_module(model)
+        state_dict = module.state_dict(keep_vars=True)
+        save_state_dict = {}
+        for key, shadow_tensor in self.shadow.items():
+            target_dtype = state_dict[key].dtype
+            save_state_dict[key] = shadow_tensor.to(dtype=target_dtype)
+        return save_state_dict
+
+    def state_dict(self) -> dict[str, Any]:
+        return {"decay": self.decay, "shadow": self.shadow}
+
+    def load_state_dict(self, state_dict: dict[str, Any]):
+        loaded_shadow = state_dict["shadow"]
+        missing = sorted(set(self.shadow) - set(loaded_shadow))
+        unexpected = sorted(set(loaded_shadow) - set(self.shadow))
+        if missing or unexpected:
+            raise ValueError(
+                f"EMA state dict key mismatch. Missing={missing[:8]} "
+                f"unexpected={unexpected[:8]}")
+        self.shadow = {
+            k: v.detach().to(device="cpu").clone()
+            for k, v in loaded_shadow.items()
+        }
+
+
+def save_checkpoint(model,
+                    optimizer,
+                    global_step,
+                    config,
+                    is_main,
+                    data_config,
+                    ema_tracker: CpuEmaTracker | None = None):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
         return
@@ -165,9 +261,18 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
             shutil.rmtree(tmp_ckpt_dir)
         tmp_ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save model state using safetensors (handle shared tensors)
-        model_to_save = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        model_to_save.save_model(tmp_ckpt_dir / "model.safetensors")
+        model_to_save = get_model_module(model)
+        if ema_tracker is None:
+            model_to_save.save_model(tmp_ckpt_dir / "model.safetensors")
+        else:
+            # Save EMA-smoothed weights as the primary checkpoint payload for
+            # inference/eval, while keeping the raw training weights separately
+            # so resume continues from the exact optimizer/model state.
+            safetensors.torch.save_file(
+                ema_tracker.get_state_dict_for_save(model),
+                tmp_ckpt_dir / "model.safetensors")
+            model_to_save.save_model(tmp_ckpt_dir / "train_model.safetensors")
+            torch.save(ema_tracker.state_dict(), tmp_ckpt_dir / "ema.pt")
 
         # Save optimizer state using PyTorch format
         torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
@@ -177,6 +282,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
             "global_step": global_step,
             "config": dataclasses.asdict(config),
             "timestamp": time.time(),
+            "checkpoint_uses_ema": ema_tracker is not None,
         }
         torch.save(metadata, tmp_ckpt_dir / "metadata.pt")
 
@@ -197,6 +303,18 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
             wandb.log({"checkpoint_step": global_step}, step=global_step)
 
 
+def load_ema_checkpoint(ema_tracker: CpuEmaTracker | None, ckpt_dir) -> bool:
+    """Load EMA shadow state if present for resume."""
+    if ema_tracker is None:
+        return False
+    ema_path = ckpt_dir / "ema.pt"
+    if not ema_path.exists():
+        return False
+    ema_state_dict = torch.load(ema_path, map_location="cpu", weights_only=False)
+    ema_tracker.load_state_dict(ema_state_dict)
+    return True
+
+
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
     """Load the latest checkpoint and return the global step."""
     checkpoint_steps = [
@@ -212,7 +330,8 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
     ckpt_dir = checkpoint_dir / f"{latest_step}"
 
     # Clear memory before loading checkpoints
-    if torch.cuda.is_available():
+    use_cuda_memory_logging = torch.cuda.is_available() and device.type == "cuda"
+    if use_cuda_memory_logging:
         torch.cuda.empty_cache()
         gc.collect()
         log_memory_usage(device, latest_step, "before_loading_checkpoint")
@@ -220,18 +339,24 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
     try:
         # Load model state with error handling
         logging.info("Loading model state...")
-        safetensors_path = ckpt_dir / "model.safetensors"
+        train_model_path = ckpt_dir / "train_model.safetensors"
+        safetensors_path = (
+            train_model_path
+            if train_model_path.exists()
+            else ckpt_dir / "model.safetensors"
+        )
 
         if safetensors_path.exists():
-            model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+            model_to_load = get_model_module(model)
             model_to_load.load_model(safetensors_path)
             logging.info("Loaded model state from safetensors format")
         else:
             raise FileNotFoundError(f"No model checkpoint found at {ckpt_dir}")
 
-        torch.cuda.empty_cache()
-        gc.collect()
-        log_memory_usage(device, latest_step, "after_loading_model")
+        if use_cuda_memory_logging:
+            torch.cuda.empty_cache()
+            gc.collect()
+            log_memory_usage(device, latest_step, "after_loading_model")
 
         # Load optimizer state with error handling
         logging.info("Loading optimizer state...")
@@ -245,29 +370,35 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
 
         optimizer.load_state_dict(optimizer_state_dict)
         del optimizer_state_dict
-        torch.cuda.empty_cache()
-        gc.collect()
-        log_memory_usage(device, latest_step, "after_loading_optimizer")
+        if use_cuda_memory_logging:
+            torch.cuda.empty_cache()
+            gc.collect()
+            log_memory_usage(device, latest_step, "after_loading_optimizer")
 
         # Load metadata
         logging.info("Loading metadata...")
         metadata = torch.load(ckpt_dir / "metadata.pt", map_location=device, weights_only=False)
         global_step = metadata.get("global_step", latest_step)
         del metadata
-        torch.cuda.empty_cache()
-        gc.collect()
-        log_memory_usage(device, latest_step, "after_loading_metadata")
+        if use_cuda_memory_logging:
+            torch.cuda.empty_cache()
+            gc.collect()
+            log_memory_usage(device, latest_step, "after_loading_metadata")
 
-        logging.info(f"Successfully loaded all checkpoint components from step {latest_step}")
-        return global_step
+        logging.info(
+            f"Successfully loaded all checkpoint components from step {latest_step}"
+        )
+        return global_step, ckpt_dir
 
     except RuntimeError as e:
         if "out of memory" in str(e):
             # Clear memory and provide detailed error message
-            torch.cuda.empty_cache()
-            gc.collect()
+            if use_cuda_memory_logging:
+                torch.cuda.empty_cache()
+                gc.collect()
             logging.error(f"Out of memory error while loading checkpoint: {e!s}")
-            log_memory_usage(device, latest_step, "after_oom_error")
+            if use_cuda_memory_logging:
+                log_memory_usage(device, latest_step, "after_oom_error")
             raise RuntimeError(
                 "Out of memory while loading checkpoint. Try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
             ) from e
@@ -499,9 +630,23 @@ def train_loop(config: _config.TrainConfig):
 
     # Load checkpoint if resuming
     global_step = 0
+    ckpt_dir = None
     if resuming:
-        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device)
+        global_step, ckpt_dir = load_checkpoint(model, optim,
+                                                config.checkpoint_dir, device)
         logging.info(f"Resumed training from step {global_step}")
+
+    ema_decay = getattr(config, "ema_decay", None)
+    ema_tracker = None
+    if is_main and ema_decay is not None:
+        ema_tracker = CpuEmaTracker(model, ema_decay)
+        if ckpt_dir is not None and load_ema_checkpoint(ema_tracker, ckpt_dir):
+            logging.info("Loaded EMA shadow weights from %s", ckpt_dir / "ema.pt")
+        else:
+            logging.info(
+                "Initialized CPU EMA shadow weights with decay=%s from current model state",
+                ema_decay,
+            )
 
     def lr_schedule(step: int):
         if step < warmup_steps:
@@ -530,7 +675,11 @@ def train_loop(config: _config.TrainConfig):
         logging.info(
             f"Optimizer: {type(config.optimizer).__name__}, weight_decay={config.optimizer.weight_decay}, clip_norm={config.optimizer.clip_gradient_norm}"
         )
-        logging.info("EMA is not supported for PyTorch training")
+        if ema_tracker is None:
+            logging.info("EMA is disabled for PyTorch training")
+        else:
+            logging.info("EMA enabled with decay=%s and CPU shadow weights",
+                         ema_decay)
         logging.info(f"Training precision: {model_cfg.dtype}")
 
     # Training loop - iterate until we reach num_train_steps
@@ -570,6 +719,8 @@ def train_loop(config: _config.TrainConfig):
             # Optimizer step
             optim.step()
             optim.zero_grad(set_to_none=True)
+            if ema_tracker is not None:
+                ema_tracker.update(model)
 
             # Clear gradients more aggressively
             for param in model.parameters():
@@ -588,7 +739,7 @@ def train_loop(config: _config.TrainConfig):
                 elapsed = time.time() - start_time
 
                 # Average stats over log interval
-                avg_info = jax.tree.map(lambda *args: sum(args) / len(args), *infos)
+                avg_info = average_scalar_dicts(infos)
                 avg_loss = avg_info.get("loss", None)
                 avg_lr = avg_info["learning_rate"]
                 avg_grad_norm = avg_info.get("grad_norm", None)
@@ -602,7 +753,7 @@ def train_loop(config: _config.TrainConfig):
                 if config.wandb_enabled and len(infos) > 0:
                     log_payload = {
                         "step": global_step,
-                        "time_per_step": elapsed / config.log_interval,
+                        "time_per_step": elapsed / max(1, len(infos)),
                         **avg_info,
                     }
                     wandb.log(log_payload, step=global_step)
@@ -612,7 +763,13 @@ def train_loop(config: _config.TrainConfig):
 
             global_step += 1
             # Save checkpoint using the new mechanism
-            save_checkpoint(model, optim, global_step, config, is_main, data_config)
+            save_checkpoint(model,
+                            optim,
+                            global_step,
+                            config,
+                            is_main,
+                            data_config,
+                            ema_tracker=ema_tracker)
 
             # Update progress bar
             if pbar is not None:
