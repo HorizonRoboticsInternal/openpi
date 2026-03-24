@@ -45,8 +45,14 @@ def create_trained_policy(
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
 
-    # Check if this is a PyTorch model by looking for model.safetensors
-    weight_path = os.path.join(checkpoint_dir, "model.safetensors")
+    weight_file_name = getattr(train_config, "checkpoint_model_file_name",
+                               "model.safetensors")
+    weight_path = os.path.join(checkpoint_dir, weight_file_name)
+    if weight_file_name != "model.safetensors" and not os.path.exists(
+            weight_path):
+        raise FileNotFoundError(
+            f"Requested PyTorch checkpoint file {weight_file_name} does not "
+            f"exist in {checkpoint_dir}.")
     is_pytorch = os.path.exists(weight_path)
 
     logging.info("Loading model...")

@@ -600,6 +600,7 @@ class TrainConfig:
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
     ema_decay: float | None = 0.99
+    ema_decay_values: tuple[float, ...] | None = None
 
     # Specifies which weights should be frozen.
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
@@ -639,6 +640,8 @@ class TrainConfig:
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
+    checkpoint_model_file_name: str = "model.safetensors"
+    fresh_optimizer_on_resume: bool = False
 
     # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
     # device memory will be reduced but training could potentially be slower.
