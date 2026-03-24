@@ -475,7 +475,9 @@ def load_ema_checkpoints(ema_trackers: CpuEmaTrackers | None, ckpt_dir) -> bool:
 def load_checkpoint(model,
                     optimizer,
                     checkpoint_dir,
-                    device):
+                    device,
+                    *,
+                    fresh_optimizer_on_resume: bool = False):
     """Load the latest checkpoint and return the global step."""
     checkpoint_steps = [
         int(d.name)
@@ -522,7 +524,12 @@ def load_checkpoint(model,
         logging.info("Loading optimizer state...")
         optimizer_path = ckpt_dir / "optimizer.pt"
 
-        if optimizer_path.exists():
+        if fresh_optimizer_on_resume:
+            logging.warning(
+                "Skipping optimizer.pt from %s because "
+                "fresh_optimizer_on_resume=True. Resuming model and global "
+                "step with a fresh optimizer state.", ckpt_dir)
+        elif optimizer_path.exists():
             optimizer_state_dict = torch.load(optimizer_path, map_location=device, weights_only=False)
             logging.info("Loaded optimizer state from pt format")
             optimizer.load_state_dict(optimizer_state_dict)
@@ -810,7 +817,8 @@ def train_loop(config: _config.TrainConfig):
             model,
             optim,
             config.checkpoint_dir,
-            device)
+            device,
+            fresh_optimizer_on_resume=config.fresh_optimizer_on_resume)
         logging.info(f"Resumed training from step {global_step}")
 
     ema_specs = resolve_ema_specs(config)

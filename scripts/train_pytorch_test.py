@@ -219,5 +219,42 @@ class ResumeTargetStepValidationTest(unittest.TestCase):
         train_pytorch.validate_resume_target_step(config, latest_step=15000)
 
 
+class FreshOptimizerResumeTest(unittest.TestCase):
+
+    def test_load_checkpoint_can_skip_optimizer_state(self):
+        model = _DummyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+        optimizer.zero_grad(set_to_none=True)
+        model.weight.grad = torch.tensor([1.0, 1.0])
+        optimizer.step()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _DummyConfig(checkpoint_dir=pathlib.Path(tmpdir))
+            data_config = _DummyDataConfig()
+            train_pytorch.save_checkpoint(model,
+                                          optimizer,
+                                          global_step=2,
+                                          config=config,
+                                          is_main=True,
+                                          data_config=data_config)
+
+            restored_model = _DummyModel()
+            restored_optim = torch.optim.SGD(restored_model.parameters(),
+                                             lr=0.1,
+                                             momentum=0.9)
+            with self.assertLogs(level="WARNING") as logs:
+                global_step, _ = train_pytorch.load_checkpoint(
+                    restored_model,
+                    restored_optim,
+                    config.checkpoint_dir,
+                    device=torch.device("cpu"),
+                    fresh_optimizer_on_resume=True)
+
+            self.assertEqual(global_step, 2)
+            self.assertIn("fresh_optimizer_on_resume=True",
+                          "\n".join(logs.output))
+            self.assertEqual(restored_optim.state, {})
+
+
 if __name__ == "__main__":
     unittest.main()

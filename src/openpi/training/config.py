@@ -641,6 +641,7 @@ class TrainConfig:
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
     checkpoint_model_file_name: str = "model.safetensors"
+    fresh_optimizer_on_resume: bool = False
 
     # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
     # device memory will be reduced but training could potentially be slower.
