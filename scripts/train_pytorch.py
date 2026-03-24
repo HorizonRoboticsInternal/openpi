@@ -415,6 +415,18 @@ def get_latest_checkpoint_step(checkpoint_dir):
     return max(checkpoint_steps) if checkpoint_steps else None
 
 
+def validate_resume_target_step(config: _config.TrainConfig,
+                                latest_step: int) -> None:
+    if config.num_train_steps <= latest_step:
+        raise ValueError(
+            "OpenPI resume expects `num_train_steps` to be the absolute final "
+            "step, not additional steps. "
+            f"Found latest checkpoint step={latest_step} in "
+            f"{config.checkpoint_dir}, but requested num_train_steps="
+            f"{config.num_train_steps}. Use a value greater than "
+            f"{latest_step}.")
+
+
 def log_memory_usage(device, step, phase="unknown"):
     """Log detailed memory usage information."""
     if not torch.cuda.is_available():
@@ -476,6 +488,7 @@ def train_loop(config: _config.TrainConfig):
             # Use validation to find the latest working checkpoint
             latest_step = get_latest_checkpoint_step(exp_checkpoint_dir)
             if latest_step is not None:
+                validate_resume_target_step(config, latest_step)
                 resuming = True
                 logging.info(
                     f"Resuming from experiment checkpoint directory: {exp_checkpoint_dir} at step {latest_step}"

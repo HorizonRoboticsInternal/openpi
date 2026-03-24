@@ -157,5 +157,21 @@ class AverageScalarDictsTest(unittest.TestCase):
         self.assertEqual(avg_info["value/ac_pos_frac"], 0.5)
 
 
+class ResumeTargetStepValidationTest(unittest.TestCase):
+
+    def test_validate_resume_target_step_rejects_non_increasing_target(self):
+        config = _DummyConfig(checkpoint_dir=pathlib.Path("/tmp"),
+                              num_train_steps=1000)
+
+        with self.assertRaisesRegex(ValueError, "absolute final step"):
+            train_pytorch.validate_resume_target_step(config, latest_step=15000)
+
+    def test_validate_resume_target_step_accepts_larger_target(self):
+        config = _DummyConfig(checkpoint_dir=pathlib.Path("/tmp"),
+                              num_train_steps=16000)
+
+        train_pytorch.validate_resume_target_step(config, latest_step=15000)
+
+
 if __name__ == "__main__":
     unittest.main()
