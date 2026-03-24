@@ -7,6 +7,7 @@ import safetensors.torch
 import torch
 
 import openpi.models_pytorch.pi0_pytorch as pi0_pytorch
+import openpi.shared.ema_utils as ema_utils
 import train_pytorch
 
 
@@ -23,8 +24,12 @@ class _DummyModel(torch.nn.Module):
         safetensors.torch.save_file(
             {k: v.detach().cpu() for k, v in state_dict.items()}, weight_path)
 
-    def load_model(self, weight_path, *, only_trainable=True):
-        del only_trainable
+    def load_model(self,
+                   weight_path,
+                   *,
+                   only_trainable=True,
+                   allow_missing_keys=False):
+        del only_trainable, allow_missing_keys
         state_dict = safetensors.torch.load_file(weight_path)
         self.load_state_dict(state_dict, strict=False)
 
@@ -35,6 +40,8 @@ class _DummyConfig:
     save_interval: int = 1
     num_train_steps: int = 10
     wandb_enabled: bool = False
+    ema_decay: float | None = None
+    ema_decay_values: tuple[float, ...] | None = None
 
 
 @dataclasses.dataclass
@@ -43,15 +50,16 @@ class _DummyDataConfig:
     asset_id: str | None = None
 
 
-class CpuEmaTrackerTest(unittest.TestCase):
+class CpuEmaTrackersTest(unittest.TestCase):
 
-    def test_save_checkpoint_writes_ema_and_raw_weights(self):
+    def test_save_checkpoint_writes_primary_and_secondary_ema_files(self):
         model = _DummyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-        ema_tracker = train_pytorch.CpuEmaTracker(model, decay=0.5)
+        ema_specs = ema_utils.build_ema_specs((0.5, 0.25))
+        ema_trackers = train_pytorch.CpuEmaTrackers(model, ema_specs)
         model.weight.data.copy_(torch.tensor([5.0, 7.0]))
         model.counter.copy_(torch.tensor([9], dtype=torch.int64))
-        ema_tracker.update(model)
+        ema_trackers.update(model)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = _DummyConfig(checkpoint_dir=pathlib.Path(tmpdir))
@@ -63,33 +71,40 @@ class CpuEmaTrackerTest(unittest.TestCase):
                                           config=config,
                                           is_main=True,
                                           data_config=data_config,
-                                          ema_tracker=ema_tracker)
+                                          ema_trackers=ema_trackers)
 
             ckpt_dir = config.checkpoint_dir / "1"
-            ema_state = safetensors.torch.load_file(ckpt_dir /
-                                                    "model.safetensors")
+            primary_state = safetensors.torch.load_file(ckpt_dir /
+                                                        "model.safetensors")
+            secondary_path = ckpt_dir / ema_utils.checkpoint_model_filename_for_decay(
+                0.25)
+            secondary_state = safetensors.torch.load_file(secondary_path)
             raw_state = safetensors.torch.load_file(ckpt_dir /
                                                     "train_model.safetensors")
             metadata = torch.load(ckpt_dir / "metadata.pt",
                                   map_location="cpu",
                                   weights_only=False)
 
-            torch.testing.assert_close(ema_state["weight"],
+            torch.testing.assert_close(primary_state["weight"],
                                        torch.tensor([3.0, 5.0]))
+            torch.testing.assert_close(secondary_state["weight"],
+                                       torch.tensor([4.0, 6.0]))
             torch.testing.assert_close(raw_state["weight"],
                                        torch.tensor([5.0, 7.0]))
-            torch.testing.assert_close(raw_state["counter"],
-                                       torch.tensor([9], dtype=torch.int64))
-            self.assertTrue(metadata["checkpoint_uses_ema"])
+            self.assertEqual(metadata["ema_decays"], [0.5, 0.25])
+            self.assertEqual(metadata["primary_ema_decay"], 0.5)
             self.assertTrue((ckpt_dir / "ema.pt").exists())
+            self.assertTrue(
+                (ckpt_dir /
+                 ema_utils.checkpoint_shadow_filename_for_decay(0.25)).exists())
 
-    def test_load_checkpoint_restores_raw_weights_and_ema_state(self):
+    def test_load_ema_checkpoints_restores_exact_match(self):
         model = _DummyModel()
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
-        ema_tracker = train_pytorch.CpuEmaTracker(model, decay=0.5)
+        ema_specs = ema_utils.build_ema_specs((0.5, 0.25))
+        ema_trackers = train_pytorch.CpuEmaTrackers(model, ema_specs)
         model.weight.data.copy_(torch.tensor([5.0, 7.0]))
-        model.counter.copy_(torch.tensor([9], dtype=torch.int64))
-        ema_tracker.update(model)
+        ema_trackers.update(model)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             config = _DummyConfig(checkpoint_dir=pathlib.Path(tmpdir))
@@ -100,30 +115,61 @@ class CpuEmaTrackerTest(unittest.TestCase):
                                           config=config,
                                           is_main=True,
                                           data_config=data_config,
-                                          ema_tracker=ema_tracker)
+                                          ema_trackers=ema_trackers)
 
             restored_model = _DummyModel()
-            restored_model.weight.data.zero_()
-            restored_model.counter.zero_()
             restored_optim = torch.optim.SGD(restored_model.parameters(), lr=0.1)
-            global_step, ckpt_dir = train_pytorch.load_checkpoint(
-                restored_model,
-                restored_optim,
-                config.checkpoint_dir,
-                device=torch.device("cpu"),
-            )
+            _, ckpt_dir = train_pytorch.load_checkpoint(restored_model,
+                                                        restored_optim,
+                                                        config.checkpoint_dir,
+                                                        device=torch.device("cpu"))
+            restored_trackers = train_pytorch.CpuEmaTrackers(
+                restored_model, ema_specs)
+            loaded = train_pytorch.load_ema_checkpoints(restored_trackers,
+                                                        ckpt_dir)
 
-            restored_ema = train_pytorch.CpuEmaTracker(restored_model, decay=0.5)
-            loaded = train_pytorch.load_ema_checkpoint(restored_ema, ckpt_dir)
-
-            self.assertEqual(global_step, 3)
             self.assertTrue(loaded)
-            torch.testing.assert_close(restored_model.weight,
-                                       torch.tensor([5.0, 7.0]))
-            torch.testing.assert_close(restored_model.counter,
-                                       torch.tensor([9], dtype=torch.int64))
-            torch.testing.assert_close(restored_ema.shadow["weight"],
-                                       torch.tensor([3.0, 5.0]))
+            torch.testing.assert_close(
+                restored_trackers.trackers[ema_specs[0].key].shadow["weight"],
+                torch.tensor([3.0, 5.0]))
+            torch.testing.assert_close(
+                restored_trackers.trackers[ema_specs[1].key].shadow["weight"],
+                torch.tensor([4.0, 6.0]))
+
+    def test_load_ema_checkpoints_clones_missing_from_primary_shadow(self):
+        model = _DummyModel()
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        primary_specs = ema_utils.build_ema_specs((0.5, ))
+        primary_trackers = train_pytorch.CpuEmaTrackers(model, primary_specs)
+        model.weight.data.copy_(torch.tensor([5.0, 7.0]))
+        primary_trackers.update(model)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _DummyConfig(checkpoint_dir=pathlib.Path(tmpdir))
+            data_config = _DummyDataConfig()
+            train_pytorch.save_checkpoint(model,
+                                          optimizer,
+                                          global_step=3,
+                                          config=config,
+                                          is_main=True,
+                                          data_config=data_config,
+                                          ema_trackers=primary_trackers)
+
+            resumed_specs = ema_utils.build_ema_specs((0.5, 0.25))
+            restored_trackers = train_pytorch.CpuEmaTrackers(model,
+                                                             resumed_specs)
+            with self.assertLogs(level="WARNING") as logs:
+                loaded = train_pytorch.load_ema_checkpoints(
+                    restored_trackers, config.checkpoint_dir / "3")
+
+            self.assertTrue(loaded)
+            self.assertIn("Initialized them from saved primary shadow",
+                          "\n".join(logs.output))
+            primary_shadow = restored_trackers.trackers[
+                resumed_specs[0].key].shadow["weight"]
+            secondary_shadow = restored_trackers.trackers[
+                resumed_specs[1].key].shadow["weight"]
+            torch.testing.assert_close(primary_shadow, secondary_shadow)
 
 
 class AverageScalarDictsTest(unittest.TestCase):
